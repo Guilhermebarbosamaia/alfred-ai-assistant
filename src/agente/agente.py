@@ -180,14 +180,17 @@ class Agente:
                     )
                     historico.registrar("assistant", resposta)
                     return resposta
-                mensagens[-1] = {
-                    **mensagens[-1],
-                    "content": (
-                        f"{mensagens[-1]['content']}\n"
-                        "A saída anterior não seguiu o esquema. "
-                        f"Corrija os dados: {erro}"
-                    ),
-                }
+                mensagens = [
+                    mensagens[0],
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Pedido original: {pedido}\n"
+                            f"Erro de validação: {erro}\n"
+                            "Corrija a saída para atender ao formato JSON exigido."
+                        ),
+                    },
+                ]
                 continue
             except ErroProvedorOllama as erro:
                 self._registrar_tentativas(tentativas)

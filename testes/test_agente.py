@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,12 +14,14 @@ class ProvedorFalso:
         self.respostas = iter(respostas)
         self.chamadas = 0
         self.mensagens: list[dict[str, str]] = []
+        self.chamadas_mensagens: list[list[dict[str, str]]] = []
 
     def gerar(
         self, mensagens: list[dict[str, str]], _: dict[str, object]
     ) -> str:
         self.chamadas += 1
         self.mensagens = mensagens
+        self.chamadas_mensagens.append([dict(mensagem) for mensagem in mensagens])
         return next(self.respostas)
 
 
@@ -48,6 +51,37 @@ def test_extracao_invalida_tenta_ate_duas_vezes_e_depois_salva(tmp_path) -> None
         nota = conexao.execute("SELECT texto, etiquetas FROM notas").fetchone()
     assert nota["texto"] == "comprar cabo USB"
     assert json.loads(nota["etiquetas"]) == ["compras"]
+
+
+def test_retry_usa_somente_pedido_e_erro_sem_historico(tmp_path, caplog) -> None:
+    agente, banco, provedor = criar_agente(
+        tmp_path,
+        [
+            "resposta inválida",
+            json.dumps({"acao": "conversa", "resposta": "Tudo certo."}),
+        ],
+    )
+    banco.registrar_mensagem("user", "mensagem anterior privada")
+    banco.registrar_mensagem("assistant", "resposta anterior privada")
+
+    with caplog.at_level(logging.INFO):
+        resposta = agente.processar("como você está?")
+
+    assert resposta == "Tudo certo."
+    primeira, segunda = provedor.chamadas_mensagens
+    assert any(
+        "mensagem anterior privada" in mensagem["content"]
+        for mensagem in primeira
+    )
+    assert len(segunda) == 2
+    assert segunda[0]["role"] == "system"
+    assert segunda[1]["role"] == "user"
+    assert "Pedido original: como você está?" in segunda[1]["content"]
+    assert "Erro de validação:" in segunda[1]["content"]
+    assert "mensagem anterior privada" not in str(segunda)
+    assert "resposta anterior privada" not in str(segunda)
+    assert "mensagem anterior privada" not in caplog.text
+    assert "tentativas=2 retries=1" in caplog.text
 
 
 def test_lembrete_sem_horario_pede_esclarecimento(tmp_path) -> None:
