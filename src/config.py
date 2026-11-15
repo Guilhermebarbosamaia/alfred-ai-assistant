@@ -11,6 +11,9 @@ class Configuracao(BaseModel):
     ollama_host: HttpUrl = HttpUrl("http://localhost:11434")
     modelo_ollama: str = "llama3.2:3b"
     timeout_ollama: float = Field(default=120, gt=0)
+    ollama_keep_alive: str = "30m"
+    ollama_num_ctx: int = Field(default=4096, gt=0)
+    ollama_num_predict: int = Field(default=256, gt=0)
     caminho_banco: Path = Path("dados/assistente.db")
     intervalo_lembretes_segundos: int = Field(default=60, gt=0)
     horario_briefing: time = time(8, 0)
@@ -44,6 +47,14 @@ class Configuracao(BaseModel):
         if not modelo:
             raise ValueError("O nome do modelo não pode ficar vazio.")
         return modelo
+
+    @field_validator("ollama_keep_alive")
+    @classmethod
+    def validar_keep_alive(cls, valor: str) -> str:
+        keep_alive = valor.strip()
+        if not keep_alive:
+            raise ValueError("OLLAMA_KEEP_ALIVE não pode ficar vazio.")
+        return keep_alive
 
     @field_validator("dia_resumo")
     @classmethod
@@ -92,6 +103,9 @@ class Configuracao(BaseModel):
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             modelo_ollama=os.getenv("MODELO_OLLAMA", "llama3.2:3b"),
             timeout_ollama=float(os.getenv("TIMEOUT_OLLAMA", "120")),
+            ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
+            ollama_num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "4096")),
+            ollama_num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "256")),
             caminho_banco=Path(os.getenv("CAMINHO_BANCO", "dados/assistente.db")),
             intervalo_lembretes_segundos=int(
                 os.getenv("INTERVALO_LEMBRETES_SEGUNDOS", "60")

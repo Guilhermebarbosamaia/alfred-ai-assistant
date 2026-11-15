@@ -13,7 +13,15 @@ def _nanosegundos_em_ms(valor: int | None) -> float | None:
 
 
 class ProvedorOllama:
-    def __init__(self, host: str, modelo: str, timeout: float) -> None:
+    def __init__(
+        self,
+        host: str,
+        modelo: str,
+        timeout: float,
+        keep_alive: str = "30m",
+        num_ctx: int = 4096,
+        num_predict: int = 256,
+    ) -> None:
         try:
             from httpx import HTTPError
             from ollama import Client, ResponseError
@@ -26,6 +34,9 @@ class ProvedorOllama:
         self._response_error = ResponseError
         self._cliente = Client(host=str(host), timeout=timeout)
         self._modelo = modelo
+        self._keep_alive = keep_alive
+        self._num_ctx = num_ctx
+        self._num_predict = num_predict
         self._condicao = Condition()
         self._ocupado = False
         self._conversas_aguardando = 0
@@ -91,7 +102,12 @@ class ProvedorOllama:
                 model=self._modelo,
                 messages=list(mensagens),
                 format=esquema,
-                options={"temperature": 0.1},
+                keep_alive=self._keep_alive,
+                options={
+                    "temperature": 0.1,
+                    "num_ctx": self._num_ctx,
+                    "num_predict": self._num_predict,
+                },
             )
         except (self._http_error, self._response_error) as erro:
             logging.warning(

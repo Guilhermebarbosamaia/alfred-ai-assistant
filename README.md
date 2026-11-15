@@ -33,8 +33,12 @@ cp .env.example .env
 python -m src.main
 ```
 
-O arquivo `.env` permite ajustar o modelo, endereço local do Ollama, timeout,
-caminho do banco, frequência de verificação, fuso (`FUSO_HORARIO`, padrão
+O arquivo `.env` permite ajustar o modelo, endereço local do Ollama e timeout.
+`OLLAMA_KEEP_ALIVE` mantém o modelo carregado por 30 minutos após o último uso
+(padrão), evitando que a primeira mensagem após alguns minutos de inatividade
+tenha de carregá-lo novamente. `OLLAMA_NUM_CTX` limita o contexto (padrão 4096)
+e `OLLAMA_NUM_PREDICT` limita a geração (padrão 256 tokens). Também é possível
+ajustar o caminho do banco, frequência de verificação, fuso (`FUSO_HORARIO`, padrão
 `America/Araguaina`), briefing (`BRIEFING_HORA`, `BRIEFING_ATIVO`) e clima
 (`CLIMA_ATIVO`, `CIDADE`). O check-in noturno usa `CHECKIN_HORA` e
 `CHECKIN_ATIVO`; o resumo semanal usa `RESUMO_DIA` (nome do dia em português,

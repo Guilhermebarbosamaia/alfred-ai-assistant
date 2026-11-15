@@ -56,6 +56,9 @@ def main(argumentos: list[str] | None = None) -> None:
         host=str(configuracao.ollama_host),
         modelo=configuracao.modelo_ollama,
         timeout=configuracao.timeout_ollama,
+        keep_alive=configuracao.ollama_keep_alive,
+        num_ctx=configuracao.ollama_num_ctx,
+        num_predict=configuracao.ollama_num_predict,
     )
     agente = Agente(provedor, banco, criar_registro(banco))
     notificador_telegram = (
