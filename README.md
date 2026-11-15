@@ -118,6 +118,22 @@ um provedor falso e não precisam do Ollama:
 pytest
 ```
 
+Para medir carregamento frio e resposta aquecida com o mesmo pedido em
+português, execute:
+
+```bash
+python -m scripts.benchmark_ollama
+```
+
+O benchmark descarrega o modelo antes da chamada fria e imprime os tempos e
+contagens fornecidos pelo Ollama, sem exibir a resposta. Para comparar versões,
+use o mesmo modelo, hardware, pedido, `OLLAMA_NUM_CTX` e `OLLAMA_NUM_PREDICT`.
+O timeout do benchmark é 600 segundos por chamada; ajuste com `--timeout` se
+necessário.
+Compare `load_duration_ms` para o custo de carregamento e
+`eval_count`/`eval_duration_ms` para a geração; nos logs do assistente, também
+compare `fila_ms` e `tentativas` para separar espera e retries.
+
 Os testes adicionais cobrem migrações, cópia de segurança, índice FTS5, datas
 relativas e execução idempotente do agendador. A integração Telegram usa
 `python-telegram-bot` e os testes não acessam a rede nem o Ollama.
