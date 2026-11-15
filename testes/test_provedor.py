@@ -27,10 +27,13 @@ def test_chamada_registra_metricas_sem_conteudo_da_resposta(caplog) -> None:
         )
 
     provedor._cliente.chat = responder
+    esquema = {"type": "object", "properties": {"acao": {"type": "string"}}}
 
     with caplog.at_level(logging.INFO):
         resultado = provedor.gerar_com_metricas(
-            [{"role": "user", "content": "conteúdo privado"}], {}, tentativa=2
+            [{"role": "user", "content": "conteúdo privado"}],
+            esquema,
+            tentativa=2,
         )
 
     assert resultado == "segredo da conversa"
@@ -49,6 +52,7 @@ def test_chamada_registra_metricas_sem_conteudo_da_resposta(caplog) -> None:
         "num_ctx": 4096,
         "num_predict": 256,
     }
+    assert argumentos["format"] == esquema
 
 
 def test_configuracao_usa_padrao_de_keep_alive_e_limites() -> None:
