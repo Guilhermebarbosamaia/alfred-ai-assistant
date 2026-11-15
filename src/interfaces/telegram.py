@@ -24,6 +24,7 @@ from src.agendador.tarefas import TarefasAgendadas
 from src.agente.agente import Agente
 
 T = TypeVar("T")
+INTERVALO_DIGITANDO_SEGUNDOS = 4
 
 
 COMANDOS: dict[str, str] = {
@@ -523,7 +524,7 @@ class InterfaceTelegram:
     ) -> T:
         tarefa = asyncio.ensure_future(operacao)
         while not tarefa.done():
-            await asyncio.sleep(4)
+            await asyncio.sleep(INTERVALO_DIGITANDO_SEGUNDOS)
             if not tarefa.done():
                 await self._enviar_acao_digitando(chat_id)
         return await tarefa

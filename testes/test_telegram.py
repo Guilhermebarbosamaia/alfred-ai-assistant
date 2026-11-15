@@ -66,6 +66,7 @@ class BotFalso:
         self.chamadas = 0
         self.mensagens: list[dict[str, object]] = []
         self.edicoes: list[dict[str, object]] = []
+        self.acoes_digitando = 0
 
     async def send_message(self, **dados: object) -> SimpleNamespace:
         self.chamadas += 1
@@ -75,7 +76,7 @@ class BotFalso:
         return SimpleNamespace(message_id=self.chamadas)
 
     async def send_chat_action(self, **_: object) -> None:
-        pass
+        self.acoes_digitando += 1
 
     async def edit_message_text(self, **dados: object) -> None:
         self.edicoes.append(dados)
@@ -173,6 +174,24 @@ def test_conversa_streaming_edita_resposta_sem_enviar_duplicata() -> None:
             "text": "Resposta completa.",
         }
     ]
+
+
+def test_acao_digitando_e_renovada_durante_espera(monkeypatch) -> None:
+    interface = criar_interface()
+    bot = BotFalso()
+    interface._application = SimpleNamespace(bot=bot)
+    monkeypatch.setattr(
+        "src.interfaces.telegram.INTERVALO_DIGITANDO_SEGUNDOS", 0.005
+    )
+
+    resposta = asyncio.run(
+        interface._aguardar_com_digitando(
+            1234, asyncio.sleep(0.03, result="resposta")
+        )
+    )
+
+    assert resposta == "resposta"
+    assert bot.acoes_digitando >= 2
 
 
 def test_divisao_de_mensagem_respeita_caracteres_unicode() -> None:
