@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 import unicodedata
 from collections.abc import Callable
@@ -152,14 +153,27 @@ class Agente:
         historico.registrar("user", pedido)
         mensagens = self._mensagens_com_contexto(historico)
 
+        tentativas = 0
         for tentativa in range(3):
+            tentativas = tentativa + 1
             try:
-                conteudo = self._provedor.gerar(
-                    mensagens, Intencao.model_json_schema()
+                gerar_com_metricas = getattr(
+                    self._provedor, "gerar_com_metricas", None
                 )
+                if callable(gerar_com_metricas):
+                    conteudo = gerar_com_metricas(
+                        mensagens,
+                        Intencao.model_json_schema(),
+                        tentativa=tentativas,
+                    )
+                else:
+                    conteudo = self._provedor.gerar(
+                        mensagens, Intencao.model_json_schema()
+                    )
                 intencao = Intencao.model_validate_json(conteudo)
             except (ValidationError, ValueError) as erro:
                 if tentativa == 2:
+                    self._registrar_tentativas(tentativas)
                     resposta = (
                         "Não consegui interpretar o pedido com segurança. "
                         "Tente reformulá-lo, incluindo os detalhes necessários."
@@ -176,6 +190,7 @@ class Agente:
                 }
                 continue
             except ErroProvedorOllama as erro:
+                self._registrar_tentativas(tentativas)
                 resposta = (
                     f"{erro} Tente novamente, reformulando o pedido e "
                     "se for um registro de hábito, informe o nome do hábito "
@@ -184,11 +199,20 @@ class Agente:
                 historico.registrar("assistant", resposta)
                 return resposta
 
+            self._registrar_tentativas(tentativas)
             resposta = self._executar_intencao(intencao)
             historico.registrar("assistant", resposta)
             return resposta
 
         raise RuntimeError("O fluxo de tentativas terminou inesperadamente.")
+
+    @staticmethod
+    def _registrar_tentativas(tentativas: int) -> None:
+        logging.info(
+            "Extração Ollama concluída: tentativas=%d retries=%d",
+            tentativas,
+            tentativas - 1,
+        )
 
     @property
     def ollama_ocupado(self) -> bool:

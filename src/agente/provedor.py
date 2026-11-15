@@ -1,9 +1,15 @@
+import logging
+import time
 from collections.abc import Sequence
 from threading import Condition
 
 
 class ErroProvedorOllama(RuntimeError):
     """Falha de comunicação com o servidor Ollama local."""
+
+
+def _nanosegundos_em_ms(valor: int | None) -> float | None:
+    return round(valor / 1_000_000, 3) if valor is not None else None
 
 
 class ProvedorOllama:
@@ -32,6 +38,15 @@ class ProvedorOllama:
     def gerar(
         self, mensagens: Sequence[dict[str, str]], esquema: dict[str, object]
     ) -> str:
+        return self.gerar_com_metricas(mensagens, esquema)
+
+    def gerar_com_metricas(
+        self,
+        mensagens: Sequence[dict[str, str]],
+        esquema: dict[str, object],
+        tentativa: int = 1,
+    ) -> str:
+        inicio_fila = time.perf_counter()
         with self._condicao:
             self._conversas_aguardando += 1
             try:
@@ -40,8 +55,9 @@ class ProvedorOllama:
                 self._ocupado = True
             finally:
                 self._conversas_aguardando -= 1
+        espera_fila_ms = (time.perf_counter() - inicio_fila) * 1000
         try:
-            return self._chamar(mensagens, esquema)
+            return self._chamar(mensagens, esquema, espera_fila_ms, tentativa)
         finally:
             with self._condicao:
                 self._ocupado = False
@@ -57,14 +73,18 @@ class ProvedorOllama:
                 )
             self._ocupado = True
         try:
-            return self._chamar(mensagens, esquema)
+            return self._chamar(mensagens, esquema, 0.0, 1)
         finally:
             with self._condicao:
                 self._ocupado = False
                 self._condicao.notify_all()
 
     def _chamar(
-        self, mensagens: Sequence[dict[str, str]], esquema: dict[str, object]
+        self,
+        mensagens: Sequence[dict[str, str]],
+        esquema: dict[str, object],
+        espera_fila_ms: float,
+        tentativa: int,
     ) -> str:
         try:
             resposta = self._cliente.chat(
@@ -74,11 +94,31 @@ class ProvedorOllama:
                 options={"temperature": 0.1},
             )
         except (self._http_error, self._response_error) as erro:
+            logging.warning(
+                "Falha na chamada Ollama: fila_ms=%.3f tentativa=%d erro=%s",
+                espera_fila_ms,
+                tentativa,
+                type(erro).__name__,
+            )
             raise ErroProvedorOllama(
                 "Não foi possível conversar com o Ollama local. "
                 "Verifique se ele está em execução e se o modelo foi baixado."
             ) from erro
 
+        logging.info(
+            "Métricas Ollama: tentativa=%d fila_ms=%.3f "
+            "total_duration_ms=%s load_duration_ms=%s "
+            "prompt_eval_count=%s prompt_eval_duration_ms=%s "
+            "eval_count=%s eval_duration_ms=%s",
+            tentativa,
+            espera_fila_ms,
+            _nanosegundos_em_ms(resposta.total_duration),
+            _nanosegundos_em_ms(resposta.load_duration),
+            resposta.prompt_eval_count,
+            _nanosegundos_em_ms(resposta.prompt_eval_duration),
+            resposta.eval_count,
+            _nanosegundos_em_ms(resposta.eval_duration),
+        )
         conteudo = resposta.message.content
         if not conteudo.strip():
             raise ErroProvedorOllama("O Ollama retornou uma resposta vazia.")
