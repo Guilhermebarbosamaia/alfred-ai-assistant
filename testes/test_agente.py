@@ -80,6 +80,35 @@ def test_pedido_de_acao_nao_usa_rota_de_conversa_direta(tmp_path) -> None:
     assert provedor.chamadas == 1
 
 
+def test_historico_e_cortado_por_orcamento_estimado_de_tokens() -> None:
+    mensagens = [
+        {"role": papel, "content": conteudo}
+        for papel, conteudo in (
+            ("user", "a" * 40),
+            ("assistant", "b" * 40),
+            ("user", "c" * 40),
+        )
+    ]
+
+    resultado = Agente._limitar_historico(mensagens, orcamento_tokens=20)
+
+    assert resultado == mensagens[-2:]
+
+
+def test_historico_preserva_pedido_atual_acima_do_orcamento() -> None:
+    atual = {"role": "user", "content": "pedido atual " * 20}
+
+    resultado = Agente._limitar_historico(
+        [
+            {"role": "assistant", "content": "histórico antigo"},
+            atual,
+        ],
+        orcamento_tokens=2,
+    )
+
+    assert resultado == [atual]
+
+
 def test_extracao_invalida_tenta_ate_duas_vezes_e_depois_salva(tmp_path) -> None:
     saidas = [
         "isto não é json",

@@ -38,7 +38,8 @@ As ações são extraídas com o JSON Schema enviado ao Ollama pelo parâmetro
 `format`; a aplicação valida a resposta antes de executar qualquer ação.
 Saudações e frases curtas de conversa casual usam uma rota direta em streaming,
 sem esquema de extração. Mensagens fora dessa lista conservadora continuam no
-fluxo estruturado de ações.
+fluxo estruturado de ações. O histórico enviado ao modelo é limitado a cerca de
+2048 tokens estimados, mantendo sempre a mensagem atual.
 `OLLAMA_KEEP_ALIVE` mantém o modelo carregado por 30 minutos após o último uso
 (padrão), evitando que a primeira mensagem após alguns minutos de inatividade
 tenha de carregá-lo novamente. `OLLAMA_NUM_CTX` limita o contexto (padrão 4096)

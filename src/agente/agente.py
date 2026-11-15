@@ -3,7 +3,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Literal, Protocol
@@ -35,6 +35,7 @@ from src.memoria.banco import Banco
 from src.memoria.historico import Historico
 
 
+ORCAMENTO_TOKENS_HISTORICO = 2048
 _PADROES_CONVERSA_DIRETA = (
     re.compile(
         r"^(?:oi|olá|ola|bom dia|boa tarde|boa noite)[.!?, ]*$",
@@ -191,6 +192,10 @@ class Agente:
     ) -> str:
         historico = Historico(self._banco, sessao_id=sessao_id)
         historico.registrar("user", pedido)
+        mensagens_historico = [
+            {"role": mensagem["papel"], "content": mensagem["conteudo"]}
+            for mensagem in historico.recentes()
+        ]
         mensagens = [
             {
                 "role": "system",
@@ -199,13 +204,7 @@ class Agente:
                     "Esta mensagem é conversa casual, não execute ações."
                 ),
             },
-            *[
-                {
-                    "role": mensagem["papel"],
-                    "content": mensagem["conteudo"],
-                }
-                for mensagem in historico.recentes()
-            ],
+            *self._limitar_historico(mensagens_historico),
         ]
         try:
             gerar_streaming = getattr(
@@ -307,6 +306,7 @@ class Agente:
             {"role": mensagem["papel"], "content": mensagem["conteudo"]}
             for mensagem in (historico or self._historico).recentes()
         ]
+        historico = self._limitar_historico(historico)
         habitos = ", ".join(
             str(habito["nome"]) for habito in self._banco.listar_habitos()
         )
@@ -320,6 +320,22 @@ class Agente:
             },
             *historico,
         ]
+
+    @staticmethod
+    def _limitar_historico(
+        mensagens: Sequence[dict[str, str]],
+        orcamento_tokens: int = ORCAMENTO_TOKENS_HISTORICO,
+    ) -> list[dict[str, str]]:
+        selecionadas: list[dict[str, str]] = []
+        tokens_usados = 0
+        for mensagem in reversed(mensagens):
+            conteudo = mensagem["content"]
+            tokens_estimados = max(1, (len(conteudo) + 3) // 4)
+            if selecionadas and tokens_usados + tokens_estimados > orcamento_tokens:
+                break
+            selecionadas.append(mensagem)
+            tokens_usados += tokens_estimados
+        return list(reversed(selecionadas))
 
     def _executar_intencao(self, intencao: Intencao) -> str:
         if intencao.acao == "nota":
