@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,10 +26,58 @@ class ProvedorFalso:
         return next(self.respostas)
 
 
+class ProvedorStreamingFalso(ProvedorFalso):
+    def __init__(self, respostas: list[str], fragmentos: list[str]) -> None:
+        super().__init__(respostas)
+        self.fragmentos = fragmentos
+        self.chamadas_streaming = 0
+
+    def gerar_texto_streaming(
+        self,
+        mensagens: list[dict[str, str]],
+        ao_receber: Callable[[str], None] | None = None,
+    ) -> str:
+        self.chamadas_streaming += 1
+        self.mensagens = mensagens
+        for fragmento in self.fragmentos:
+            if ao_receber is not None:
+                ao_receber(fragmento)
+        return "".join(self.fragmentos)
+
+
 def criar_agente(tmp_path, respostas: list[str]) -> tuple[Agente, Banco, ProvedorFalso]:
     banco = Banco(tmp_path / "assistente.db")
     provedor = ProvedorFalso(respostas)
     return Agente(provedor, banco, criar_registro(banco)), banco, provedor
+
+
+def test_conversa_casual_usa_rota_direta_em_streaming(tmp_path) -> None:
+    banco = Banco(tmp_path / "assistente.db")
+    provedor = ProvedorStreamingFalso([], ["Olá", "!"])
+    agente = Agente(provedor, banco, criar_registro(banco))
+    fragmentos: list[str] = []
+
+    resposta = agente.processar("Oi!", ao_receber=fragmentos.append)
+
+    assert resposta == "Olá!"
+    assert fragmentos == ["Olá", "!"]
+    assert provedor.chamadas_streaming == 1
+    assert provedor.chamadas == 0
+    assert provedor.mensagens[0]["role"] == "system"
+    assert "não execute ações" in provedor.mensagens[0]["content"]
+    assert banco.ultimas_mensagens()[-1] == {
+        "papel": "assistant",
+        "conteudo": "Olá!",
+    }
+
+
+def test_pedido_de_acao_nao_usa_rota_de_conversa_direta(tmp_path) -> None:
+    agente, _, provedor = criar_agente(
+        tmp_path, [json.dumps({"acao": "conversa", "resposta": "Pronto."})]
+    )
+
+    assert agente.processar("Oi, anota comprar leite") == "Pronto."
+    assert provedor.chamadas == 1
 
 
 def test_extracao_invalida_tenta_ate_duas_vezes_e_depois_salva(tmp_path) -> None:
@@ -58,14 +107,14 @@ def test_retry_usa_somente_pedido_e_erro_sem_historico(tmp_path, caplog) -> None
         tmp_path,
         [
             "resposta inválida",
-            json.dumps({"acao": "conversa", "resposta": "Tudo certo."}),
+            json.dumps({"acao": "esclarecer", "resposta": "Tudo certo."}),
         ],
     )
     banco.registrar_mensagem("user", "mensagem anterior privada")
     banco.registrar_mensagem("assistant", "resposta anterior privada")
 
     with caplog.at_level(logging.INFO):
-        resposta = agente.processar("como você está?")
+        resposta = agente.processar("me diga algo")
 
     assert resposta == "Tudo certo."
     primeira, segunda = provedor.chamadas_mensagens
@@ -76,7 +125,7 @@ def test_retry_usa_somente_pedido_e_erro_sem_historico(tmp_path, caplog) -> None
     assert len(segunda) == 2
     assert segunda[0]["role"] == "system"
     assert segunda[1]["role"] == "user"
-    assert "Pedido original: como você está?" in segunda[1]["content"]
+    assert "Pedido original: me diga algo" in segunda[1]["content"]
     assert "Erro de validação:" in segunda[1]["content"]
     assert "mensagem anterior privada" not in str(segunda)
     assert "resposta anterior privada" not in str(segunda)

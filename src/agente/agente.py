@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import sqlite3
 import unicodedata
 from collections.abc import Callable
@@ -32,6 +33,26 @@ from src.ferramentas.registro import RegistroFerramentas
 from src.ferramentas.tempo import ParametrosHora
 from src.memoria.banco import Banco
 from src.memoria.historico import Historico
+
+
+_PADROES_CONVERSA_DIRETA = (
+    re.compile(
+        r"^(?:oi|olá|ola|bom dia|boa tarde|boa noite)[.!?, ]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:tudo bem|como vai|como você está|como voce esta)\??[.! ]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:obrigado|obrigada|valeu|muito obrigado)[.! ]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:quem é você|quem e voce|o que você faz|o que voce faz)\??$",
+        re.IGNORECASE,
+    ),
+)
 
 
 class InterpretacaoRegistroHabito(BaseModel):
@@ -141,12 +162,68 @@ class Agente:
             "sessao_agente_atual", default="terminal"
         )
 
-    def processar(self, pedido: str, sessao_id: str = "terminal") -> str:
+    def processar(
+        self,
+        pedido: str,
+        sessao_id: str = "terminal",
+        ao_receber: Callable[[str], None] | None = None,
+    ) -> str:
         token = self._sessao_atual.set(sessao_id)
         try:
+            if self._eh_conversa_direta(pedido):
+                return self._processar_conversa_direta(
+                    pedido, sessao_id, ao_receber
+                )
             return self._processar_sessao(pedido, sessao_id)
         finally:
             self._sessao_atual.reset(token)
+
+    @staticmethod
+    def _eh_conversa_direta(pedido: str) -> bool:
+        texto = " ".join(pedido.strip().split())
+        return any(padrao.fullmatch(texto) for padrao in _PADROES_CONVERSA_DIRETA)
+
+    def _processar_conversa_direta(
+        self,
+        pedido: str,
+        sessao_id: str,
+        ao_receber: Callable[[str], None] | None,
+    ) -> str:
+        historico = Historico(self._banco, sessao_id=sessao_id)
+        historico.registrar("user", pedido)
+        mensagens = [
+            {
+                "role": "system",
+                "content": (
+                    "Responda em português com naturalidade e brevidade. "
+                    "Esta mensagem é conversa casual, não execute ações."
+                ),
+            },
+            *[
+                {
+                    "role": mensagem["papel"],
+                    "content": mensagem["conteudo"],
+                }
+                for mensagem in historico.recentes()
+            ],
+        ]
+        try:
+            gerar_streaming = getattr(
+                self._provedor, "gerar_texto_streaming", None
+            )
+            if callable(gerar_streaming):
+                resposta = gerar_streaming(mensagens, ao_receber)
+            else:
+                resposta = self._provedor.gerar(mensagens, {})
+            if not resposta.strip():
+                raise ErroProvedorOllama("O Ollama retornou uma resposta vazia.")
+        except ErroProvedorOllama as erro:
+            resposta = (
+                f"{erro} Tente novamente, reformulando o pedido."
+            )
+        logging.info("Conversa direta Ollama concluída: tentativas=1 retries=0")
+        historico.registrar("assistant", resposta)
+        return resposta
 
     def _processar_sessao(self, pedido: str, sessao_id: str) -> str:
         historico = Historico(self._banco, sessao_id=sessao_id)

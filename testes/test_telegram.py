@@ -46,6 +46,14 @@ class AgenteFalso:
         self.cancelamentos.append(sessao_id)
         return "Ação cancelada."
 
+    def processar(
+        self, pedido: str, sessao_id: str, ao_receber=None
+    ) -> str:
+        if ao_receber is not None:
+            ao_receber("Resposta ")
+            ao_receber("completa.")
+        return "Resposta completa."
+
 
 class TarefasFalsas:
     def parar(self) -> None:
@@ -57,15 +65,20 @@ class BotFalso:
         self.falhas = falhas
         self.chamadas = 0
         self.mensagens: list[dict[str, object]] = []
+        self.edicoes: list[dict[str, object]] = []
 
-    async def send_message(self, **dados: object) -> None:
+    async def send_message(self, **dados: object) -> SimpleNamespace:
         self.chamadas += 1
         if self.chamadas <= self.falhas:
             raise RuntimeError("falha simulada")
         self.mensagens.append(dados)
+        return SimpleNamespace(message_id=self.chamadas)
 
     async def send_chat_action(self, **_: object) -> None:
         pass
+
+    async def edit_message_text(self, **dados: object) -> None:
+        self.edicoes.append(dados)
 
 
 def criar_interface(
@@ -137,6 +150,29 @@ def test_divisao_de_mensagem_respeita_limite_do_telegram() -> None:
 
     assert [len(parte) for parte in partes] == [4096, 904]
     assert "".join(partes) == "a" * 5000
+
+
+def test_conversa_streaming_edita_resposta_sem_enviar_duplicata() -> None:
+    interface = criar_interface()
+    bot = BotFalso()
+    interface._application = SimpleNamespace(bot=bot)
+
+    asyncio.run(
+        interface._processar_solicitacao(
+            Solicitacao(1234, "Oi!")
+        )
+    )
+
+    assert bot.mensagens == [
+        {"chat_id": 1234, "text": "Resposta "},
+    ]
+    assert bot.edicoes == [
+        {
+            "chat_id": 1234,
+            "message_id": 1,
+            "text": "Resposta completa.",
+        }
+    ]
 
 
 def test_divisao_de_mensagem_respeita_caracteres_unicode() -> None:

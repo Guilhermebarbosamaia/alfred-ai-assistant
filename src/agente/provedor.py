@@ -1,6 +1,6 @@
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from threading import Condition
 
 
@@ -74,6 +74,28 @@ class ProvedorOllama:
                 self._ocupado = False
                 self._condicao.notify_all()
 
+    def gerar_texto_streaming(
+        self,
+        mensagens: Sequence[dict[str, str]],
+        ao_receber: Callable[[str], None] | None = None,
+    ) -> str:
+        inicio_fila = time.perf_counter()
+        with self._condicao:
+            self._conversas_aguardando += 1
+            try:
+                while self._ocupado:
+                    self._condicao.wait()
+                self._ocupado = True
+            finally:
+                self._conversas_aguardando -= 1
+        espera_fila_ms = (time.perf_counter() - inicio_fila) * 1000
+        try:
+            return self._chamar_streaming(mensagens, espera_fila_ms, ao_receber)
+        finally:
+            with self._condicao:
+                self._ocupado = False
+                self._condicao.notify_all()
+
     def gerar_agendado(
         self, mensagens: Sequence[dict[str, str]], esquema: dict[str, object]
     ) -> str:
@@ -121,6 +143,61 @@ class ProvedorOllama:
                 "Verifique se ele está em execução e se o modelo foi baixado."
             ) from erro
 
+        self._registrar_metricas(resposta, espera_fila_ms, tentativa)
+        conteudo = resposta.message.content
+        if not conteudo.strip():
+            raise ErroProvedorOllama("O Ollama retornou uma resposta vazia.")
+        return conteudo
+
+    def _chamar_streaming(
+        self,
+        mensagens: Sequence[dict[str, str]],
+        espera_fila_ms: float,
+        ao_receber: Callable[[str], None] | None,
+    ) -> str:
+        try:
+            resposta = self._cliente.chat(
+                model=self._modelo,
+                messages=list(mensagens),
+                stream=True,
+                keep_alive=self._keep_alive,
+                options={
+                    "temperature": 0.1,
+                    "num_ctx": self._num_ctx,
+                    "num_predict": self._num_predict,
+                },
+            )
+            partes: list[str] = []
+            resposta_final = None
+            for parte in resposta:
+                resposta_final = parte
+                conteudo_parcial = parte.message.content
+                if conteudo_parcial:
+                    partes.append(conteudo_parcial)
+                    if ao_receber is not None:
+                        ao_receber(conteudo_parcial)
+        except (self._http_error, self._response_error) as erro:
+            logging.warning(
+                "Falha na chamada Ollama: fila_ms=%.3f tentativa=1 erro=%s",
+                espera_fila_ms,
+                type(erro).__name__,
+            )
+            raise ErroProvedorOllama(
+                "Não foi possível conversar com o Ollama local. "
+                "Verifique se ele está em execução e se o modelo foi baixado."
+            ) from erro
+
+        if resposta_final is not None:
+            self._registrar_metricas(resposta_final, espera_fila_ms, 1)
+        conteudo = "".join(partes)
+        if not conteudo.strip():
+            raise ErroProvedorOllama("O Ollama retornou uma resposta vazia.")
+        return conteudo
+
+    @staticmethod
+    def _registrar_metricas(
+        resposta: object, espera_fila_ms: float, tentativa: int
+    ) -> None:
         logging.info(
             "Métricas Ollama: tentativa=%d fila_ms=%.3f "
             "total_duration_ms=%s load_duration_ms=%s "
@@ -128,14 +205,12 @@ class ProvedorOllama:
             "eval_count=%s eval_duration_ms=%s",
             tentativa,
             espera_fila_ms,
-            _nanosegundos_em_ms(resposta.total_duration),
-            _nanosegundos_em_ms(resposta.load_duration),
-            resposta.prompt_eval_count,
-            _nanosegundos_em_ms(resposta.prompt_eval_duration),
-            resposta.eval_count,
-            _nanosegundos_em_ms(resposta.eval_duration),
+            _nanosegundos_em_ms(getattr(resposta, "total_duration", None)),
+            _nanosegundos_em_ms(getattr(resposta, "load_duration", None)),
+            getattr(resposta, "prompt_eval_count", None),
+            _nanosegundos_em_ms(
+                getattr(resposta, "prompt_eval_duration", None)
+            ),
+            getattr(resposta, "eval_count", None),
+            _nanosegundos_em_ms(getattr(resposta, "eval_duration", None)),
         )
-        conteudo = resposta.message.content
-        if not conteudo.strip():
-            raise ErroProvedorOllama("O Ollama retornou uma resposta vazia.")
-        return conteudo

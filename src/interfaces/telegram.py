@@ -384,10 +384,13 @@ class InterfaceTelegram:
                 solicitacao.chat_id, resposta
             )
             return
-        resposta = await self._executar_com_agente(solicitacao)
-        await self._enviar_resposta_com_confirmacao(
-            solicitacao.chat_id, resposta
+        resposta, enviada_por_streaming = await self._executar_com_agente(
+            solicitacao
         )
+        if not enviada_por_streaming:
+            await self._enviar_resposta_com_confirmacao(
+                solicitacao.chat_id, resposta
+            )
 
     async def _solicitar_exclusao(
         self, chat_id: int, argumentos: list[str]
@@ -439,15 +442,81 @@ class InterfaceTelegram:
             reply_markup=teclado,
         )
 
-    async def _executar_com_agente(self, solicitacao: Solicitacao) -> str:
-        return await self._aguardar_com_digitando(
-            solicitacao.chat_id,
-            asyncio.to_thread(
-                self._agente.processar,
-                solicitacao.texto,
-                str(solicitacao.chat_id),
-            ),
+    async def _executar_com_agente(
+        self, solicitacao: Solicitacao
+    ) -> tuple[str, bool]:
+        loop = asyncio.get_running_loop()
+        fragmentos: asyncio.Queue[str | None] = asyncio.Queue()
+
+        def publicar_fragmento(fragmento: str) -> None:
+            loop.call_soon_threadsafe(fragmentos.put_nowait, fragmento)
+
+        publicador = asyncio.create_task(
+            self._publicar_resposta_streaming(solicitacao.chat_id, fragmentos)
         )
+        try:
+            resposta = await self._aguardar_com_digitando(
+                solicitacao.chat_id,
+                asyncio.to_thread(
+                    self._agente.processar,
+                    solicitacao.texto,
+                    str(solicitacao.chat_id),
+                    publicar_fragmento,
+                ),
+            )
+        except BaseException:
+            publicador.cancel()
+            await asyncio.gather(publicador, return_exceptions=True)
+            raise
+        await fragmentos.put(None)
+        enviada = await publicador
+        return resposta, enviada
+
+    async def _publicar_resposta_streaming(
+        self, chat_id: int, fragmentos: asyncio.Queue[str | None]
+    ) -> bool:
+        try:
+            primeiro = await fragmentos.get()
+            if primeiro is None:
+                return False
+            texto = primeiro
+            if self._application is None:
+                raise RuntimeError("O cliente Telegram ainda não foi iniciado.")
+            mensagem = await self._application.bot.send_message(
+                chat_id=chat_id, text=texto
+            )
+            texto_publicado = texto
+            mensagem_id = mensagem.message_id
+
+            while True:
+                try:
+                    fragmento = await asyncio.wait_for(
+                        fragmentos.get(), timeout=0.8
+                    )
+                except TimeoutError:
+                    fragmento = ""
+                if fragmento is None:
+                    if texto != texto_publicado:
+                        await self._application.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=mensagem_id,
+                            text=texto,
+                        )
+                    return True
+                if fragmento:
+                    texto += fragmento
+                if texto != texto_publicado and (
+                    not fragmento or len(texto) - len(texto_publicado) >= 80
+                ):
+                    await self._application.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=mensagem_id,
+                        text=texto,
+                    )
+                    texto_publicado = texto
+        except Exception as erro:
+            self._registrar_erro("publicar resposta em streaming", erro)
+            return False
 
     async def _aguardar_com_digitando(
         self, chat_id: int, operacao: Awaitable[T]
