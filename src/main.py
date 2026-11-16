@@ -10,8 +10,8 @@ from src.agendador.notificador import (
 from src.agendador.resumo import ResumoSemanal
 from src.agendador.tarefas import TarefasAgendadas
 from src.agente.agente import Agente
-from src.agente.provedor import ProvedorOllama
-from src.config import Configuracao
+from src.agente.fabrica import criar_provedor
+from src.config import Configuracao, ErroConfiguracao
 from src.ferramentas.registro import criar_registro
 from src.interfaces.terminal import executar_terminal
 from src.interfaces.telegram import InterfaceTelegram
@@ -48,18 +48,16 @@ def main(argumentos: list[str] | None = None) -> None:
         interface = "terminal"
         ativar_telegram = False
 
+    try:
+        configuracao.validar_provedor()
+    except ErroConfiguracao as erro:
+        print(f"Alfred não iniciado: {erro}")
+        raise SystemExit(1) from None
     banco = Banco(
         configuracao.caminho_banco,
         fuso_horario=configuracao.fuso_horario,
     )
-    provedor = ProvedorOllama(
-        host=str(configuracao.ollama_host),
-        modelo=configuracao.modelo_ollama,
-        timeout=configuracao.timeout_ollama,
-        keep_alive=configuracao.ollama_keep_alive,
-        num_ctx=configuracao.ollama_num_ctx,
-        num_predict=configuracao.ollama_num_predict,
-    )
+    provedor = criar_provedor(configuracao, banco)
     agente = Agente(provedor, banco, criar_registro(banco))
     notificador_telegram = (
         NotificadorTelegram(configuracao.telegram_id_autorizado)

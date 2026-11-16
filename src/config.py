@@ -7,7 +7,18 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, HttpUrl, SecretStr, field_validator
 
 
+class ErroConfiguracao(ValueError):
+    """Configuração incompleta que impede o Alfred de iniciar."""
+
+
 class Configuracao(BaseModel):
+    provedor: Literal["claude", "ollama"] = "claude"
+    anthropic_api_key: SecretStr = SecretStr("")
+    modelo_claude: str = "claude-haiku-5-5"
+    timeout_claude: float = Field(default=60, gt=0)
+    claude_max_tokens: int = Field(default=256, gt=0)
+    claude_limite_tokens_dia: int = Field(default=200_000, ge=0)
+    claude_limite_tokens_mes: int = Field(default=3_000_000, ge=0)
     ollama_host: HttpUrl = HttpUrl("http://localhost:11434")
     modelo_ollama: str = "llama3.2:3b"
     timeout_ollama: float = Field(default=120, gt=0)
@@ -40,7 +51,7 @@ class Configuracao(BaseModel):
             raise ValueError(f"Fuso horário inválido: {valor}") from erro
         return valor
 
-    @field_validator("modelo_ollama")
+    @field_validator("modelo_ollama", "modelo_claude")
     @classmethod
     def validar_modelo(cls, valor: str) -> str:
         modelo = valor.strip()
@@ -96,10 +107,34 @@ class Configuracao(BaseModel):
             )
         return dias[dia]
 
+    def validar_provedor(self) -> None:
+        """Confere se o provedor escolhido tem o necessário para iniciar."""
+        if (
+            self.provedor == "claude"
+            and not self.anthropic_api_key.get_secret_value().strip()
+        ):
+            raise ErroConfiguracao(
+                "ANTHROPIC_API_KEY não está definida. Com PROVEDOR=claude "
+                "(o padrão), coloque sua chave da API do Claude no arquivo "
+                ".env, na linha ANTHROPIC_API_KEY=..., ou use PROVEDOR=ollama "
+                "para usar o modelo local."
+            )
+
     @classmethod
     def carregar(cls) -> "Configuracao":
         load_dotenv()
         return cls(
+            provedor=os.getenv("PROVEDOR", "claude").strip().lower(),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+            modelo_claude=os.getenv("MODELO_CLAUDE", "claude-haiku-5-5"),
+            timeout_claude=float(os.getenv("TIMEOUT_CLAUDE", "60")),
+            claude_max_tokens=int(os.getenv("CLAUDE_MAX_TOKENS", "256")),
+            claude_limite_tokens_dia=int(
+                os.getenv("CLAUDE_LIMITE_TOKENS_DIA", "200000")
+            ),
+            claude_limite_tokens_mes=int(
+                os.getenv("CLAUDE_LIMITE_TOKENS_MES", "3000000")
+            ),
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             modelo_ollama=os.getenv("MODELO_OLLAMA", "llama3.2:3b"),
             timeout_ollama=float(os.getenv("TIMEOUT_OLLAMA", "120")),

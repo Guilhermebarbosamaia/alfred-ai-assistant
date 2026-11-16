@@ -12,7 +12,7 @@ Relogio = Callable[[], datetime]
 
 
 class Banco:
-    _VERSAO_ATUAL = 5
+    _VERSAO_ATUAL = 6
 
     def __init__(
         self,
@@ -99,6 +99,8 @@ class Banco:
                     self._migracao_4(conexao)
                 elif proxima == 5:
                     self._migracao_5(conexao)
+                elif proxima == 6:
+                    self._migracao_6(conexao)
                 conexao.execute(
                     """INSERT OR IGNORE INTO versao_esquema (versao, aplicada_em)
                        VALUES (?, ?)""",
@@ -275,9 +277,69 @@ class Banco:
             "CREATE INDEX IF NOT EXISTS mensagens_sessao_id_id ON mensagens (sessao_id, id)"
         )
 
+    @staticmethod
+    def _migracao_6(conexao: sqlite3.Connection) -> None:
+        conexao.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS uso_modelo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provedor TEXT NOT NULL,
+                modelo TEXT NOT NULL,
+                operacao TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+                output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+                criado_em TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS uso_modelo_criado_em
+                ON uso_modelo (criado_em);
+            """
+        )
+
     def _inicio_dia_utc(self, dia: date) -> str:
         inicio = datetime.combine(dia, time.min, tzinfo=self.fuso)
         return self.data_utc(inicio)
+
+    def _inicio_mes_utc(self, dia: date) -> str:
+        return self._inicio_dia_utc(dia.replace(day=1))
+
+    def inicio_dia_e_mes_utc(self) -> tuple[str, str]:
+        """Início do dia e do mês atuais no fuso local, convertidos para UTC."""
+        hoje = self.para_local(self.agora_utc()).date()
+        return self._inicio_dia_utc(hoje), self._inicio_mes_utc(hoje)
+
+    def registrar_uso_modelo(
+        self,
+        provedor: str,
+        modelo: str,
+        operacao: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        with self._conectar() as conexao:
+            conexao.execute(
+                """INSERT INTO uso_modelo (
+                       provedor, modelo, operacao, input_tokens,
+                       output_tokens, criado_em
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    provedor,
+                    modelo,
+                    operacao,
+                    max(0, int(input_tokens)),
+                    max(0, int(output_tokens)),
+                    self.data_utc(self.agora_utc()),
+                ),
+            )
+
+    def tokens_usados_desde(self, inicio_utc: str) -> int:
+        """Soma de tokens de entrada e saída registrados a partir de `inicio_utc`."""
+        with self._conectar() as conexao:
+            linha = conexao.execute(
+                """SELECT COALESCE(SUM(input_tokens + output_tokens), 0)
+                   FROM uso_modelo WHERE criado_em >= ?""",
+                (inicio_utc,),
+            ).fetchone()
+        return int(linha[0])
 
     def criar_habito(
         self, nome: str, descricao: str, meta_semanal: int

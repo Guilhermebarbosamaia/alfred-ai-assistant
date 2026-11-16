@@ -5,7 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from src.agente.provedor import ErroProvedorOllama
+from src.agente.erros import ErroProvedor
 from src.memoria.banco import Banco
 
 
@@ -65,14 +65,16 @@ class ResumoSemanal:
                 )
             resposta = RespostaResumo.model_validate_json(conteudo)
         except (
-            ErroProvedorOllama,
+            ErroProvedor,
             ValidationError,
             ValueError,
             TimeoutError,
             OSError,
             RuntimeError,
         ) as erro:
-            logging.warning("Falha ao redigir o resumo semanal: %s", erro)
+            logging.warning(
+                "Falha ao redigir o resumo semanal: erro=%s", type(erro).__name__
+            )
             return self._texto_fixo(dados)
         return resposta.texto
 

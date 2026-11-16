@@ -7,7 +7,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.agendador.clima import obter_clima
-from src.agente.provedor import ErroProvedorOllama
+from src.agente.erros import ErroProvedor
 from src.memoria.banco import Banco
 
 
@@ -92,14 +92,16 @@ class Briefing:
                 )
             resposta = RespostaBriefing.model_validate_json(conteudo)
         except (
-            ErroProvedorOllama,
+            ErroProvedor,
             ValidationError,
             ValueError,
             TimeoutError,
             OSError,
             RuntimeError,
         ) as erro:
-            logging.warning("Falha ao redigir o briefing: %s", erro)
+            logging.warning(
+                "Falha ao redigir o briefing: erro=%s", type(erro).__name__
+            )
             return self._texto_fixo(horario, dados)
         return self._incluir_habitos(resposta.texto, dados)
 

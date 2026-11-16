@@ -1,7 +1,8 @@
 # CLAUDE.md
 
-Assistente pessoal local em Python 3.12 (terminal e Telegram) que usa um modelo
-via Ollama local. Veja o `README.md` para instalação, comandos e variáveis.
+Assistente pessoal em Python 3.12 (terminal e Telegram) que usa um modelo pela
+API do Claude (padrão, `PROVEDOR=claude`) ou pelo Ollama local
+(`PROVEDOR=ollama`). Veja o `README.md` para instalação, comandos e variáveis.
 
 ## Idioma
 
@@ -14,10 +15,12 @@ via Ollama local. Veja o `README.md` para instalação, comandos e variáveis.
 ## Testes
 
 - Rode com `pytest` na raiz (usa `pytest.ini`; testes ficam em `testes/`).
-- Testes **nunca** acessam a rede: nada de Ollama real, API do Telegram,
-  Open-Meteo ou qualquer outro serviço. Use o provedor falso, `SimpleNamespace`
-  ou substitua o cliente (`provedor._cliente.chat = ...`), como em
-  `testes/test_provedor.py`.
+- Testes **nunca** acessam a rede: nada de API do Claude, Ollama real, API do
+  Telegram, Open-Meteo ou qualquer outro serviço, e nunca usam chave real. Use
+  o provedor falso, `SimpleNamespace` ou substitua o cliente
+  (`provedor._cliente.chat = ...` no Ollama, `provedor._cliente =
+  SimpleNamespace(messages=...)` no Claude), como em `testes/test_provedor.py`
+  e `testes/test_provedor_claude.py`.
 - Bancos de teste ficam em `tmp_path`, nunca em `dados/`.
 - Todo comportamento novo ou corrigido ganha teste. Rode a suíte inteira antes
   de dar uma tarefa por concluída.
@@ -31,8 +34,9 @@ via Ollama local. Veja o `README.md` para instalação, comandos e variáveis.
 - Logs podem conter apenas metadados: tempos, contagens de tokens, tentativas,
   nomes de operação/ferramenta, IDs e o tipo da exceção
   (`type(erro).__name__`).
-- Tokens e segredos nunca aparecem em logs; o `FiltroToken` de
-  `src/interfaces/telegram.py` existe para isso e deve continuar aplicado.
+- Tokens e segredos (incluindo `ANTHROPIC_API_KEY`) nunca aparecem em logs nem
+  em mensagens de erro; o `FiltroToken` de `src/interfaces/telegram.py` existe
+  para isso e deve continuar aplicado.
 - Ao mexer em logs, adicione teste com `caplog` verificando que o conteúdo
   **não** aparece (padrão de `test_chamada_registra_metricas_sem_conteudo_da_resposta`).
 
@@ -46,9 +50,15 @@ via Ollama local. Veja o `README.md` para instalação, comandos e variáveis.
 
 ## Arquitetura e regras do código
 
-- Execução local: a aplicação só se conecta ao Ollama local, à API do Telegram
-  (quando ativa) e ao Open-Meteo (quando `CLIMA_ATIVO=true`). Não adicione
-  outros serviços externos sem pedir.
+- Serviços externos: a aplicação só se conecta ao provedor escolhido em
+  `PROVEDOR` (API do Claude ou Ollama local), à API do Telegram (quando ativa)
+  e ao Open-Meteo (quando `CLIMA_ATIVO=true`). Não adicione outros serviços
+  externos sem pedir.
+- Provedores ficam em `src/agente/` (`provedor_claude.py`, `provedor.py`) e
+  são montados em `src/agente/fabrica.py`; só o provedor escolhido é
+  instanciado (com o Claude, `ollama` não é importado). Erros de provedor
+  herdam de `ErroProvedor` (`src/agente/erros.py`) e o código captura essa
+  base, nunca a classe de um provedor específico.
 - O modelo só interpreta e redige; o código decide. Banco, horários, cálculos
   (resumo, progresso de hábitos) e disparo de lembretes ficam no código.
 - Saídas do modelo são validadas com Pydantic antes de qualquer ação; nunca
@@ -61,9 +71,9 @@ via Ollama local. Veja o `README.md` para instalação, comandos e variáveis.
   `src/memoria/banco.py` (incrementar `_VERSAO_ATUAL`), com backup e teste.
   Nunca altere migrações existentes.
 - Datas são gravadas em UTC e exibidas no fuso de `FUSO_HORARIO`.
-- O modelo padrão roda em máquinas com 8 GB de RAM: respeite os limites de
-  contexto e geração (`OLLAMA_NUM_CTX`, `OLLAMA_NUM_PREDICT`, orçamento do
-  histórico) e evite prompts grandes.
+- Respeite os limites de geração (`CLAUDE_MAX_TOKENS`, `OLLAMA_NUM_PREDICT`) e
+  de contexto (`OLLAMA_NUM_CTX`, orçamento do histórico) e evite prompts
+  grandes: o Ollama roda em máquinas com 8 GB de RAM e o Claude cobra por token.
 - Dependências novas vão para `requirements.txt` com faixa de versão e só com
   justificativa.
 

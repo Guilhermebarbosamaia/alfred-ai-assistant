@@ -27,6 +27,7 @@ def test_inicializacao_cria_tabelas_e_pode_ser_repetida(tmp_path) -> None:
         "habitos",
         "registros_habito",
         "checkins",
+        "uso_modelo",
     } <= tabelas
     with banco._conectar() as conexao:
         colunas_lembretes = {
@@ -124,7 +125,7 @@ def test_migracao_indexa_notas_existentes(tmp_path) -> None:
     assert len(resultados) == 1
     assert resultados[0]["id"] == 1
     assert "2026-01-02" in str(resultados[0]["criada_em"])
-    assert [linha["versao"] for linha in versoes] == [1, 2, 3, 4, 5]
+    assert [linha["versao"] for linha in versoes] == [1, 2, 3, 4, 5, 6]
     assert [tuple(linha) for linha in aplicacoes] == [
         tuple(linha) for linha in aplicacoes_apos_repetir
     ]

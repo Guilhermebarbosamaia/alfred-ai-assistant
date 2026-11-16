@@ -3,8 +3,12 @@ import time
 from collections.abc import Callable, Sequence
 from threading import Condition
 
+from src.agente.erros import ErroProvedor
 
-class ErroProvedorOllama(RuntimeError):
+__all__ = ["ErroProvedor", "ErroProvedorOllama", "ProvedorOllama"]
+
+
+class ErroProvedorOllama(ErroProvedor):
     """Falha de comunicação com o servidor Ollama local."""
 
 

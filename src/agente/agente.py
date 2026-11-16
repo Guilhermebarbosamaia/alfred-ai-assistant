@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from src.agente.datas import resolver_data_relativa
 from src.agente.prompts import prompt_com_horario
-from src.agente.provedor import ErroProvedorOllama
+from src.agente.erros import ErroProvedor
 from src.ferramentas.busca_notas import ParametrosBuscaNota
 from src.ferramentas.gestao import (
     ParametrosConcluirLembrete,
@@ -215,12 +215,12 @@ class Agente:
             else:
                 resposta = self._provedor.gerar(mensagens, {})
             if not resposta.strip():
-                raise ErroProvedorOllama("O Ollama retornou uma resposta vazia.")
-        except ErroProvedorOllama as erro:
+                raise ErroProvedor("O modelo retornou uma resposta vazia.")
+        except ErroProvedor as erro:
             resposta = (
                 f"{erro} Tente novamente, reformulando o pedido."
             )
-        logging.info("Conversa direta Ollama concluída: tentativas=1 retries=0")
+        logging.info("Conversa direta com o modelo concluída: tentativas=1 retries=0")
         historico.registrar("assistant", resposta)
         return resposta
 
@@ -268,7 +268,7 @@ class Agente:
                     },
                 ]
                 continue
-            except ErroProvedorOllama as erro:
+            except ErroProvedor as erro:
                 self._registrar_tentativas(tentativas)
                 resposta = (
                     f"{erro} Tente novamente, reformulando o pedido e "
@@ -288,14 +288,19 @@ class Agente:
     @staticmethod
     def _registrar_tentativas(tentativas: int) -> None:
         logging.info(
-            "Extração Ollama concluída: tentativas=%d retries=%d",
+            "Extração com o modelo concluída: tentativas=%d retries=%d",
             tentativas,
             tentativas - 1,
         )
 
     @property
-    def ollama_ocupado(self) -> bool:
+    def provedor_ocupado(self) -> bool:
         return bool(getattr(self._provedor, "ocupado", False))
+
+    @property
+    def ollama_ocupado(self) -> bool:
+        """Nome antigo de `provedor_ocupado`, mantido por compatibilidade."""
+        return self.provedor_ocupado
 
     def _mensagens_com_contexto(
         self, historico: Historico | None = None
@@ -650,6 +655,6 @@ class Agente:
                 mensagens, RespostaBuscaNotas.model_json_schema()
             )
             resposta = RespostaBuscaNotas.model_validate_json(conteudo)
-        except (ErroProvedorOllama, ValidationError, ValueError):
+        except (ErroProvedor, ValidationError, ValueError):
             return "Não consegui responder com segurança usando as notas encontradas."
         return resposta.resposta
