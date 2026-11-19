@@ -18,20 +18,20 @@ jobs:
         working-directory: cloudflare
     steps:
       - name: Baixar o código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Instalar uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Instalar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Instalar Node.js (necessário para o wrangler)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
 
       # O [build] do wrangler.toml roda copiar_codigo.py, que copia ../src para worker/src
       - name: Deploy na Cloudflare
