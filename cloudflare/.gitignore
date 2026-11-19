@@ -1,0 +1,8 @@
+# Cópia gerada por copiar_codigo.py e artefatos do pywrangler.
+worker/src/
+pylock.toml
+python_modules/
+.venv/
+.venv-workers/
+.wrangler/
+.dev.vars

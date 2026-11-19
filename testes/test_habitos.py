@@ -218,7 +218,7 @@ def test_migracao_de_habitos_e_idempotente(tmp_path) -> None:
                 "PRAGMA index_list(registros_habito)"
             )
         }
-    assert primeira_versao == Banco._VERSAO_ATUAL == 6
+    assert primeira_versao == Banco._VERSAO_ATUAL == 7
     assert contagem == contagem_depois == 1
     assert "sqlite_autoindex_registros_habito_1" in indices
 

@@ -50,6 +50,9 @@ class RegistroFerramentas:
     def ferramentas(self) -> tuple[Ferramenta, ...]:
         return tuple(self._ferramentas.values())
 
+    def parametros(self, nome: str) -> type[BaseModel]:
+        return self._ferramentas[nome].parametros
+
     def executar(
         self, nome: str, entrada: BaseModel, confirmado: bool = False
     ) -> str:

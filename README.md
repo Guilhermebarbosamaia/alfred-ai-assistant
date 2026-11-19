@@ -113,6 +113,65 @@ comandos `/start`, `/ajuda`, `/briefing`, `/checkin`, `/resumo`, `/lembretes`,
 sensíveis pedem confirmação por botão ou com `sim`/`não`; a confirmação expira
 em dois minutos. Fotos, áudios e arquivos ainda não são aceitos.
 
+## Deploy na Cloudflare (opcional)
+
+O Alfred também roda sem máquina ligada, como Python Worker na Cloudflare:
+
+- O Telegram entrega as mensagens por **webhook** (`POST /telegram`), validado
+  pelo segredo `TELEGRAM_WEBHOOK_SEGREDO` e por `TELEGRAM_ID_AUTORIZADO`.
+- Os dados ficam no SQLite de um **Durable Object** único, com o mesmo esquema
+  e as mesmas migrações do banco local. Não há backup em arquivo; a Cloudflare
+  mantém recuperação ponto a ponto (30 dias) do Durable Object.
+- Um **Cron Trigger** a cada minuto avisa os lembretes e dispara briefing,
+  check-in e resumo depois do horário configurado, uma vez por dia.
+- Só funciona com `PROVEDOR=claude`. O clima fica desligado (`CLIMA_ATIVO=false`).
+- O check-in pergunta um hábito por mensagem. Confirmações e check-ins em
+  andamento ficam no banco (tabela `estado_conversa`), e não em memória.
+
+O modo local (terminal, polling e Ollama) continua igual. Os arquivos da nuvem
+ficam em `cloudflare/`, e o `src/` é copiado para `cloudflare/worker/src` no
+build.
+
+Requisitos: conta na Cloudflare, Node.js (o `pywrangler` usa o `wrangler` via
+`npx`) e `uv` 0.13.4 ou mais novo (`uv self update`).
+
+```bash
+cd cloudflare
+uv sync
+uv run pywrangler login
+```
+
+Cadastre os segredos (cada comando pede o valor; gere o segredo do webhook com
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`):
+
+```bash
+uv run pywrangler secret put ANTHROPIC_API_KEY
+uv run pywrangler secret put TELEGRAM_BOT_TOKEN
+uv run pywrangler secret put TELEGRAM_ID_AUTORIZADO
+uv run pywrangler secret put TELEGRAM_WEBHOOK_SEGREDO
+```
+
+Horários, fuso, modelo e limites de tokens ficam em `[vars]` no
+`cloudflare/wrangler.toml`. Depois publique e aponte o bot para o Worker
+(coloque o mesmo `TELEGRAM_WEBHOOK_SEGREDO` no `.env` local antes):
+
+```bash
+uv run pywrangler deploy
+```
+
+```bash
+cd .. && python scripts/registrar_webhook.py https://alfred.<sua-conta>.workers.dev
+```
+
+Enquanto o webhook estiver ativo, o bot não funciona por polling. Para voltar
+ao modo local, rode `python scripts/registrar_webhook.py --remover`. Os dados
+do banco local não são copiados para a nuvem.
+
+Para testar localmente, crie `cloudflare/.dev.vars` com valores falsos (ele
+não vai para o git) e rode `uv run pywrangler dev`. Simule o cron com
+`curl "http://localhost:8787/cdn-cgi/handler/scheduled"`. O `pywrangler dev`
+leva de 30 a 90 segundos para subir.
+
 ## Uso
 
 - `anota: comprar cabo USB` salva uma nota.

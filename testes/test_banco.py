@@ -125,7 +125,7 @@ def test_migracao_indexa_notas_existentes(tmp_path) -> None:
     assert len(resultados) == 1
     assert resultados[0]["id"] == 1
     assert "2026-01-02" in str(resultados[0]["criada_em"])
-    assert [linha["versao"] for linha in versoes] == [1, 2, 3, 4, 5, 6]
+    assert [linha["versao"] for linha in versoes] == [1, 2, 3, 4, 5, 6, 7]
     assert [tuple(linha) for linha in aplicacoes] == [
         tuple(linha) for linha in aplicacoes_apos_repetir
     ]

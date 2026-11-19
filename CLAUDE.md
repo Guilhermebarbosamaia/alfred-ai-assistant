@@ -54,6 +54,14 @@ API do Claude (padrão, `PROVEDOR=claude`) ou pelo Ollama local
   `PROVEDOR` (API do Claude ou Ollama local), à API do Telegram (quando ativa)
   e ao Open-Meteo (quando `CLIMA_ATIVO=true`). Não adicione outros serviços
   externos sem pedir.
+- Deploy opcional na Cloudflare (`cloudflare/`, `src/nuvem.py`): Worker Python
+  com webhook do Telegram (`src/interfaces/telegram_webhook.py`), SQLite de um
+  Durable Object (`src/memoria/conexao_do.py`) e Cron Trigger
+  (`TarefasAgendadas.executar_ciclo`). Só `PROVEDOR=claude`. O código usado
+  pela nuvem não pode importar `ollama`, `apscheduler` nem `telegram`
+  (python-telegram-bot) no topo do módulo, e estado entre requisições vai para
+  o banco (`estado_conversa`), nunca para a memória. O modo local continua
+  sendo o padrão e não pode quebrar.
 - Provedores ficam em `src/agente/` (`provedor_claude.py`, `provedor.py`) e
   são montados em `src/agente/fabrica.py`; só o provedor escolhido é
   instanciado (com o Claude, `ollama` não é importado). Erros de provedor

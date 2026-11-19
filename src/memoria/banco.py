@@ -12,21 +12,31 @@ Relogio = Callable[[], datetime]
 
 
 class Banco:
-    _VERSAO_ATUAL = 6
+    _VERSAO_ATUAL = 7
 
     def __init__(
         self,
         caminho: Path,
         fuso_horario: str = "America/Araguaina",
         relogio: Relogio | None = None,
+        conectar: Callable[[], sqlite3.Connection] | None = None,
     ) -> None:
+        """`conectar` substitui o arquivo SQLite local (ex.: Durable Object).
+
+        Com ele, `caminho` é só um rótulo: nada é gravado em disco e não há
+        backup em arquivo antes das migrações.
+        """
         self.caminho = caminho
         self.fuso = ZoneInfo(fuso_horario)
         self._relogio = relogio or (lambda: datetime.now(timezone.utc))
-        self.caminho.parent.mkdir(parents=True, exist_ok=True)
+        self._conectar_externo = conectar
+        if conectar is None:
+            self.caminho.parent.mkdir(parents=True, exist_ok=True)
         self.inicializar()
 
     def _conectar(self) -> sqlite3.Connection:
+        if self._conectar_externo is not None:
+            return self._conectar_externo()
         conexao = sqlite3.connect(self.caminho, timeout=10)
         conexao.row_factory = sqlite3.Row
         return conexao
@@ -76,7 +86,11 @@ class Banco:
         return int(linha[0])
 
     def inicializar(self) -> None:
-        existia = self.caminho.exists() and self.caminho.stat().st_size > 0
+        existia = (
+            self._conectar_externo is None
+            and self.caminho.exists()
+            and self.caminho.stat().st_size > 0
+        )
         with self._conectar() as conexao:
             versao = self._versao(conexao)
             if existia and versao < self._VERSAO_ATUAL:
@@ -101,6 +115,8 @@ class Banco:
                     self._migracao_5(conexao)
                 elif proxima == 6:
                     self._migracao_6(conexao)
+                elif proxima == 7:
+                    self._migracao_7(conexao)
                 conexao.execute(
                     """INSERT OR IGNORE INTO versao_esquema (versao, aplicada_em)
                        VALUES (?, ?)""",
@@ -301,6 +317,65 @@ class Banco:
 
     def _inicio_mes_utc(self, dia: date) -> str:
         return self._inicio_dia_utc(dia.replace(day=1))
+
+    @staticmethod
+    def _migracao_7(conexao: sqlite3.Connection) -> None:
+        conexao.execute(
+            """CREATE TABLE IF NOT EXISTS estado_conversa (
+                sessao_id TEXT NOT NULL,
+                tipo TEXT NOT NULL,
+                dados TEXT NOT NULL,
+                expira_em TEXT NOT NULL,
+                PRIMARY KEY (sessao_id, tipo)
+            )"""
+        )
+
+    def salvar_estado_conversa(
+        self,
+        sessao_id: str,
+        tipo: str,
+        dados: dict[str, object],
+        expira_em: datetime,
+    ) -> None:
+        """Guarda uma pendência de conversa (confirmação, check-in etc.)."""
+        with self._conectar() as conexao:
+            conexao.execute(
+                """INSERT INTO estado_conversa (sessao_id, tipo, dados, expira_em)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT (sessao_id, tipo) DO UPDATE
+                   SET dados = excluded.dados, expira_em = excluded.expira_em""",
+                (
+                    sessao_id,
+                    tipo,
+                    json.dumps(dados, ensure_ascii=False),
+                    self.data_utc(expira_em),
+                ),
+            )
+
+    def estado_conversa(
+        self, sessao_id: str, tipo: str
+    ) -> dict[str, object] | None:
+        """Retorna `{"dados": ..., "expirado": bool}` ou None se não houver."""
+        with self._conectar() as conexao:
+            linha = conexao.execute(
+                """SELECT dados, expira_em FROM estado_conversa
+                   WHERE sessao_id = ? AND tipo = ?""",
+                (sessao_id, tipo),
+            ).fetchone()
+        if linha is None:
+            return None
+        return {
+            "dados": json.loads(str(linha["dados"])),
+            "expirado": str(linha["expira_em"]) <= self.data_utc(self.agora_utc()),
+        }
+
+    def remover_estado_conversa(self, sessao_id: str, tipo: str) -> bool:
+        with self._conectar() as conexao:
+            cursor = conexao.execute(
+                "DELETE FROM estado_conversa WHERE sessao_id = ? AND tipo = ?",
+                (sessao_id, tipo),
+            )
+            return cursor.rowcount > 0
 
     def inicio_dia_e_mes_utc(self) -> tuple[str, str]:
         """Início do dia e do mês atuais no fuso local, convertidos para UTC."""

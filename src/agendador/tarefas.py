@@ -2,16 +2,16 @@ import logging
 import math
 import re
 from collections.abc import Callable
+from typing import Any
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
-
-from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.agendador.briefing import Briefing
 from src.agendador.notificador import Notificador, NotificadorTerminal
 from src.agendador.resumo import ResumoSemanal
 from src.memoria.banco import Banco
 
+_DIAS_SEMANA = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 class TarefasAgendadas:
     def __init__(
@@ -47,13 +47,19 @@ class TarefasAgendadas:
         self._dia_resumo = dia_resumo
         self._horario_resumo = horario_resumo
         self._responder_checkin_agendado = responder_checkin
-        self._agendador = BackgroundScheduler(timezone=self._fuso)
+        # Só o modo local (processo contínuo) usa o APScheduler, criado em
+        # `iniciar`; na Cloudflare o Cron Trigger chama `executar_ciclo` e o
+        # pacote nem é importado.
+        self._agendador: Any = None
         self.briefing_pendente = False
         self._iniciado = False
 
     def iniciar(self) -> None:
         if self._iniciado:
             return
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        self._agendador = BackgroundScheduler(timezone=self._fuso)
         self._agendador.add_job(
             self.verificar_lembretes,
             "interval",
@@ -122,9 +128,54 @@ class TarefasAgendadas:
         self._responder_checkin_agendado = responder
 
     def parar(self) -> None:
-        if self._agendador.running:
+        if self._agendador is not None and self._agendador.running:
             self._agendador.shutdown(wait=True)
         self._iniciado = False
+
+    def executar_ciclo(
+        self, iniciar_checkin: Callable[[], object] | None = None
+    ) -> None:
+        """Uma rodada de agendamento sem processo contínuo (Cron Trigger).
+
+        Chamada a cada minuto, faz o que os jobs do APScheduler fazem: avisa
+        lembretes vencidos e dispara briefing, check-in e resumo quando o
+        horário local já passou e a tarefa ainda não rodou hoje.
+        """
+        self.verificar_lembretes()
+        try:
+            local = self._banco.para_local(self._relogio())
+            hora = local.time().replace(tzinfo=None, second=0, microsecond=0)
+            hoje = local.date().isoformat()
+            if (
+                self._briefing is not None
+                and self._briefing_ativo
+                and hora >= self._horario_briefing
+                and self._banco.execucao_agendador("briefing", hoje) is None
+            ):
+                self.executar_briefing(manual=False)
+            if self._checkin_ativo:
+                self._pular_checkins_anteriores()
+                if hora >= time(23, 59):
+                    self.pular_checkin_pendente()
+                elif (
+                    hora >= self._horario_checkin
+                    and self._banco.checkin(local.date()) is None
+                    and self._banco.execucao_agendador("checkin", hoje) is None
+                ):
+                    if iniciar_checkin is None:
+                        self.executar_checkin(manual=False)
+                    else:
+                        iniciar_checkin()
+            if (
+                self._resumo is not None
+                and self._dia_resumo in _DIAS_SEMANA
+                and _DIAS_SEMANA.index(self._dia_resumo) == local.weekday()
+                and hora >= self._horario_resumo
+                and self._banco.execucao_agendador("resumo", hoje) is None
+            ):
+                self.executar_resumo(manual=False)
+        except Exception as erro:
+            self._registrar_erro("ciclo_agendado", erro)
 
     def verificar_lembretes(self) -> None:
         try:
@@ -208,39 +259,11 @@ class TarefasAgendadas:
         manual: bool = True,
         responder: Callable[[str], str] | None = None,
     ) -> str:
-        if not self._checkin_ativo:
-            return "O check-in noturno está desativado."
         try:
-            agora = self._relogio()
-            local = self._banco.para_local(agora)
-            dia = local.date()
-            habitos = self._banco.listar_habitos()
-            if not habitos:
-                return "Não há hábitos ativos para o check-in."
-            estado = self._banco.checkin(dia)
-            if estado and estado["status"] in {"respondido", "pulado"}:
-                return f"O check-in de {dia:%d/%m/%Y} já foi {estado['status']}."
-            execucao = self._banco.execucao_agendador(
-                "checkin", dia.isoformat()
-            )
-            if not execucao:
-                if not self._banco.registrar_execucao(
-                    "checkin", dia.isoformat(), "iniciado"
-                ):
-                    return "O check-in de hoje já foi iniciado."
-                self._banco.iniciar_checkin(dia)
-                execucao = self._banco.execucao_agendador(
-                    "checkin", dia.isoformat()
-                )
-            elif execucao["status"] == "falha":
-                self._banco.registrar_execucao(
-                    "checkin", dia.isoformat(), "iniciado"
-                )
-                self._banco.iniciar_checkin(dia)
-
-            perguntas = self._perguntas_checkin(habitos, dia)
-            if not manual and execucao and execucao["status"] == "enviado":
-                return "O check-in de hoje já foi enviado."
+            preparado = self.preparar_checkin(manual)
+            if isinstance(preparado, str):
+                return preparado
+            dia, perguntas = preparado
             if not manual and self._responder_checkin_agendado is None:
                 texto = self._texto_perguntas(perguntas)
                 self._notificador.notificar(f"CHECK-IN NOTURNO:\n{texto}")
@@ -275,23 +298,84 @@ class TarefasAgendadas:
                     observacao,
                     dia,
                 )
-            if not pendencias:
-                self._banco.finalizar_checkin("respondido", dia)
-                self._banco.registrar_execucao(
-                    "checkin", dia.isoformat(), "respondido"
-                )
-                return "Check-in respondido e registrado."
-            self._banco.registrar_execucao(
-                "checkin", dia.isoformat(), "enviado"
-            )
-            return (
-                "Check-in parcial; sem resposta válida para: "
-                + ", ".join(pendencias)
-                + ". Você pode executar 'checkin' novamente hoje."
-            )
+            return self.concluir_checkin(dia, pendencias)
         except Exception as erro:
             self._registrar_erro("checkin", erro)
             return "Não foi possível iniciar o check-in."
+
+    def preparar_checkin(
+        self, manual: bool = True
+    ) -> tuple[date, list[tuple[dict[str, object], str]]] | str:
+        """Registra o início do check-in de hoje e devolve as perguntas.
+
+        Devolve um texto quando não há o que perguntar (desativado, sem
+        hábitos, já respondido ou já enviado pelo agendamento).
+        """
+        if not self._checkin_ativo:
+            return "O check-in noturno está desativado."
+        agora = self._relogio()
+        local = self._banco.para_local(agora)
+        dia = local.date()
+        habitos = self._banco.listar_habitos()
+        if not habitos:
+            return "Não há hábitos ativos para o check-in."
+        estado = self._banco.checkin(dia)
+        if estado and estado["status"] in {"respondido", "pulado"}:
+            return f"O check-in de {dia:%d/%m/%Y} já foi {estado['status']}."
+        execucao = self._banco.execucao_agendador(
+            "checkin", dia.isoformat()
+        )
+        if not execucao:
+            if not self._banco.registrar_execucao(
+                "checkin", dia.isoformat(), "iniciado"
+            ):
+                return "O check-in de hoje já foi iniciado."
+            self._banco.iniciar_checkin(dia)
+            execucao = self._banco.execucao_agendador(
+                "checkin", dia.isoformat()
+            )
+        elif execucao["status"] == "falha":
+            self._banco.registrar_execucao(
+                "checkin", dia.isoformat(), "iniciado"
+            )
+            self._banco.iniciar_checkin(dia)
+
+        perguntas = self._perguntas_checkin(habitos, dia)
+        if not manual and execucao and execucao["status"] == "enviado":
+            return "O check-in de hoje já foi enviado."
+        return dia, perguntas
+
+    def concluir_checkin(self, dia: date, pendencias: list[str]) -> str:
+        if not pendencias:
+            self._banco.finalizar_checkin("respondido", dia)
+            self._banco.registrar_execucao(
+                "checkin", dia.isoformat(), "respondido"
+            )
+            return "Check-in respondido e registrado."
+        self._banco.registrar_execucao("checkin", dia.isoformat(), "enviado")
+        return (
+            "Check-in parcial; sem resposta válida para: "
+            + ", ".join(pendencias)
+            + ". Você pode executar 'checkin' novamente hoje."
+        )
+
+    def registrar_resposta_checkin(
+        self, dia: date, habito_id: int, resposta: str
+    ) -> bool:
+        """Interpreta e grava a resposta de um hábito; False se for inválida."""
+        texto = resposta.strip()
+        interpretada = self._interpretar_resposta_checkin(texto) if texto else None
+        if interpretada is None:
+            return False
+        feito, quantidade, observacao = interpretada
+        try:
+            self._banco.registrar_habito(
+                habito_id, feito, quantidade, observacao, dia
+            )
+        except ValueError:
+            # Já registrado no dia ou hábito desativado: nada a perguntar.
+            pass
+        return True
 
     def _perguntas_checkin(
         self, habitos: list[dict[str, object]], dia: date

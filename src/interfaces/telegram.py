@@ -2,13 +2,12 @@ import asyncio
 import logging
 import threading
 import time
-import traceback
 import uuid
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
-from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -22,25 +21,20 @@ from telegram.ext import (
 from src.agendador.notificador import NotificadorTelegram, dividir_mensagem
 from src.agendador.tarefas import TarefasAgendadas
 from src.agente.agente import Agente
+from src.interfaces.comandos import (
+    COMANDOS,
+    DESCRICOES_COMANDOS,
+    TEXTO_AJUDA,
+    TEXTO_NAO_SUPORTADO,
+    estado_lembretes,
+    id_exclusao,
+    interpretar_confirmacao,
+    mapear_comando,
+)
+from src.interfaces.telegram_api import FiltroToken, proteger_logs  # noqa: F401 (reexportado)
 
 T = TypeVar("T")
 INTERVALO_DIGITANDO_SEGUNDOS = 4
-
-
-COMANDOS: dict[str, str] = {
-    "start": "ajuda",
-    "ajuda": "ajuda",
-    "briefing": "briefing",
-    "checkin": "checkin",
-    "resumo": "resumo",
-    "lembretes": "lembretes",
-    "notas": "notas",
-    "dados": "dados",
-}
-
-
-def mapear_comando(comando: str) -> str | None:
-    return COMANDOS.get(comando.removeprefix("/").split("@", 1)[0].lower())
 
 
 @dataclass(frozen=True)
@@ -64,28 +58,6 @@ class Solicitacao:
     chat_id: int
     texto: str
     tipo: Literal["mensagem", "confirmar", "cancelar"] = "mensagem"
-
-
-class FiltroToken(logging.Filter):
-    def __init__(self, token: str) -> None:
-        super().__init__()
-        self._token = token
-
-    def filter(self, registro: logging.LogRecord) -> bool:
-        if not self._token:
-            return True
-        mensagem = registro.getMessage()
-        if self._token in mensagem:
-            registro.msg = mensagem.replace(self._token, "[TOKEN REMOVIDO]")
-            registro.args = ()
-        if registro.exc_info:
-            excecao = "".join(traceback.format_exception(*registro.exc_info))
-            if self._token in excecao:
-                registro.exc_info = None
-                registro.exc_text = None
-                registro.msg = "Erro Telegram ocultado para proteger o token."
-                registro.args = ()
-        return True
 
 
 class InterfaceTelegram:
@@ -164,17 +136,7 @@ class InterfaceTelegram:
                 )
 
     def _proteger_logs(self) -> None:
-        filtro = FiltroToken(self._token)
-        logging.basicConfig()
-        raiz = logging.getLogger()
-        raiz.addFilter(filtro)
-        for manipulador in raiz.handlers:
-            manipulador.addFilter(filtro)
-        for nome in ("telegram", "httpx", "httpcore"):
-            logger = logging.getLogger(nome)
-            logger.addFilter(filtro)
-            for manipulador in logger.handlers:
-                manipulador.addFilter(filtro)
+        proteger_logs(self._token)
 
     def iniciar_em_thread(self) -> threading.Thread:
         self._thread = threading.Thread(
@@ -200,14 +162,8 @@ class InterfaceTelegram:
         try:
             await application.bot.set_my_commands(
                 [
-                    BotCommand("start", "Iniciar e ver ajuda"),
-                    BotCommand("ajuda", "Mostrar comandos"),
-                    BotCommand("briefing", "Gerar o briefing do dia"),
-                    BotCommand("checkin", "Iniciar check-in de hábitos"),
-                    BotCommand("resumo", "Gerar o resumo semanal"),
-                    BotCommand("lembretes", "Listar lembretes"),
-                    BotCommand("notas", "Listar notas recentes"),
-                    BotCommand("dados", "Visualizar dados salvos"),
+                    BotCommand(comando, descricao)
+                    for comando, descricao in DESCRICOES_COMANDOS
                 ]
             )
         except Exception as erro:
@@ -316,7 +272,7 @@ class InterfaceTelegram:
             return
         await self._enviar(
             int(chat.id),
-            "Ainda não são suportados fotos, áudios e arquivos. Envie uma mensagem de texto.",
+            TEXTO_NAO_SUPORTADO,
         )
 
     async def _enfileirar(
@@ -396,20 +352,13 @@ class InterfaceTelegram:
     async def _solicitar_exclusao(
         self, chat_id: int, argumentos: list[str]
     ) -> str:
-        if len(argumentos) != 2 or argumentos[0].lower() not in {
-            "nota",
-            "lembrete",
-        }:
-            return "Uso: apagar nota <id> ou apagar lembrete <id>"
-        try:
-            registro_id = int(argumentos[1].removeprefix("#"))
-            if registro_id < 1:
-                raise ValueError
-        except ValueError:
-            return "O id deve ser um número positivo."
+        validado = id_exclusao(argumentos)
+        if isinstance(validado, str):
+            return validado
+        tipo, registro_id = validado
         return await asyncio.to_thread(
             self._agente.solicitar_exclusao_registro,
-            argumentos[0].lower(),
+            tipo,
             registro_id,
             str(chat_id),
         )
@@ -534,14 +483,7 @@ class InterfaceTelegram:
     ) -> str | None:
         acao = mapear_comando(comando)
         if acao == "ajuda":
-            return (
-                "Comandos: /start, /ajuda, /briefing, /checkin, /resumo, "
-                "/lembretes [pendentes|concluidos|atrasados], /notas e /dados. "
-                "Também posso salvar notas, criar lembretes, conversar sobre "
-                "notas e acompanhar hábitos. Para apagar, envie "
-                "apagar nota <id> ou apagar lembrete <id>. Fotos, áudios e "
-                "arquivos ainda não são suportados."
-            )
+            return TEXTO_AJUDA
         if acao == "briefing":
             await asyncio.to_thread(self._tarefas.executar_briefing)
             return None
@@ -555,14 +497,8 @@ class InterfaceTelegram:
             await asyncio.to_thread(self._tarefas.executar_resumo)
             return None
         if acao == "lembretes":
-            estado = argumentos[0].lower() if argumentos else "pendentes"
-            if estado == "concluídos":
-                estado = "concluidos"
-            if len(argumentos) > 1 or estado not in {
-                "pendentes",
-                "concluidos",
-                "atrasados",
-            }:
+            estado = estado_lembretes(argumentos)
+            if estado is None:
                 return "Uso: /lembretes [pendentes|concluidos|atrasados]"
             return await asyncio.to_thread(self._agente.listar_lembretes, estado)
         if acao == "notas":
@@ -615,12 +551,7 @@ class InterfaceTelegram:
 
     @staticmethod
     def _interpretar_confirmacao(texto: str) -> bool | None:
-        resposta = texto.strip().casefold()
-        if resposta in {"sim", "s"}:
-            return True
-        if resposta in {"não", "nao", "n"}:
-            return False
-        return None
+        return interpretar_confirmacao(texto)
 
     def _expirar_confirmacao(
         self, chat_id: int, confirmacao: ConfirmacaoPendente

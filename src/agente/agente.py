@@ -5,7 +5,7 @@ import sqlite3
 import unicodedata
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -36,6 +36,7 @@ from src.memoria.historico import Historico
 
 
 ORCAMENTO_TOKENS_HISTORICO = 2048
+VALIDADE_ACAO_PENDENTE = timedelta(minutes=2)
 _PADROES_CONVERSA_DIRETA = (
     re.compile(
         r"^(?:oi|olá|ola|bom dia|boa tarde|boa noite)[.!?, ]*$",
@@ -152,8 +153,13 @@ class Agente:
         banco: Banco,
         ferramentas: RegistroFerramentas,
         relogio: Callable[[], datetime] | None = None,
+        pendencias_no_banco: bool = False,
     ) -> None:
+        """Com `pendencias_no_banco`, as ações que aguardam confirmação ficam
+        no banco (expiram em `VALIDADE_ACAO_PENDENTE`) em vez da memória, para
+        sobreviver entre requisições (ex.: webhook na Cloudflare)."""
         self._provedor = provedor
+        self._pendencias_no_banco = pendencias_no_banco
         self._banco = banco
         self._historico = Historico(banco)
         self._ferramentas = ferramentas
@@ -518,9 +524,8 @@ class Agente:
             if isinstance(erro, ValueError):
                 return str(erro)
             if isinstance(erro, PermissionError):
-                self._acoes_pendentes[self._sessao_atual.get()] = (
-                    nome,
-                    entrada,
+                self._guardar_acao_pendente(
+                    self._sessao_atual.get(), nome, entrada
                 )
                 return "Esta ação exige confirmação explícita."
             return "Não consegui concluir essa ação por um erro no armazenamento."
@@ -536,10 +541,10 @@ class Agente:
         return self.tem_confirmacao_pendente()
 
     def tem_confirmacao_pendente(self, sessao_id: str = "terminal") -> bool:
-        return sessao_id in self._acoes_pendentes
+        return self._obter_acao_pendente(sessao_id) is not None
 
     def descrever_acao_pendente(self, sessao_id: str = "terminal") -> str:
-        acao = self._acoes_pendentes.get(sessao_id)
+        acao = self._obter_acao_pendente(sessao_id)
         if acao is None:
             return "Confirmação necessária para executar a ação."
         nome, entrada = acao
@@ -552,7 +557,8 @@ class Agente:
         return "Confirma executar esta ação sensível?"
 
     def confirmar_acao_pendente(self, sessao_id: str = "terminal") -> str:
-        acao = self._acoes_pendentes.pop(sessao_id, None)
+        acao = self._obter_acao_pendente(sessao_id)
+        self._remover_acao_pendente(sessao_id)
         if acao is None:
             return "Não há ação aguardando confirmação."
         nome, entrada = acao
@@ -563,12 +569,53 @@ class Agente:
         return resposta
 
     def cancelar_acao_pendente(self, sessao_id: str = "terminal") -> str:
-        self._acoes_pendentes.pop(sessao_id, None)
+        self._remover_acao_pendente(sessao_id)
         resposta = "Ação cancelada."
         Historico(self._banco, sessao_id=sessao_id).registrar(
             "assistant", resposta
         )
         return resposta
+
+    def _guardar_acao_pendente(
+        self, sessao_id: str, nome: str, entrada: BaseModel
+    ) -> None:
+        if not self._pendencias_no_banco:
+            self._acoes_pendentes[sessao_id] = (nome, entrada)
+            return
+        self._banco.salvar_estado_conversa(
+            sessao_id,
+            "acao_pendente",
+            {"nome": nome, "entrada": entrada.model_dump(mode="json")},
+            self._banco.agora_utc() + VALIDADE_ACAO_PENDENTE,
+        )
+
+    def _obter_acao_pendente(
+        self, sessao_id: str
+    ) -> tuple[str, BaseModel] | None:
+        if not self._pendencias_no_banco:
+            return self._acoes_pendentes.get(sessao_id)
+        estado = self._banco.estado_conversa(sessao_id, "acao_pendente")
+        if estado is None:
+            return None
+        if estado["expirado"]:
+            self._remover_acao_pendente(sessao_id)
+            return None
+        dados = estado["dados"]
+        try:
+            nome = str(dados["nome"])
+            entrada = self._ferramentas.parametros(nome).model_validate(
+                dados["entrada"]
+            )
+        except (KeyError, TypeError, ValidationError):
+            self._remover_acao_pendente(sessao_id)
+            return None
+        return nome, entrada
+
+    def _remover_acao_pendente(self, sessao_id: str) -> None:
+        if not self._pendencias_no_banco:
+            self._acoes_pendentes.pop(sessao_id, None)
+            return
+        self._banco.remover_estado_conversa(sessao_id, "acao_pendente")
 
     def listar_lembretes(self, estado: str) -> str:
         parametros = ParametrosListarLembretes(estado=estado)

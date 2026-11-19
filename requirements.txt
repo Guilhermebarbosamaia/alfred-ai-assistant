@@ -5,3 +5,5 @@ APScheduler>=3.10,<4
 python-dotenv>=1.0,<2
 pytest>=8,<9
 python-telegram-bot>=21,<23
+# Cliente HTTP da Bot API no webhook (Cloudflare); já vinha pelo anthropic.
+httpx>=0.27,<1

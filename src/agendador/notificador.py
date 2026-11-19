@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from telegram import Bot
+if TYPE_CHECKING:
+    # Só o modo local (polling) usa o python-telegram-bot.
+    from telegram import Bot
 
 
 def dividir_mensagem(texto: str, limite: int = 4096) -> list[str]:

@@ -1,0 +1,40 @@
+# Alfred na Cloudflare: Worker Python + Durable Object com SQLite + Cron.
+# Segredos NÃO ficam aqui: use `uv run pywrangler secret put NOME` (veja o README).
+name = "alfred"
+main = "worker/entry.py"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["python_workers"]
+
+# Copia ../src para worker/src antes de `pywrangler dev` e `pywrangler deploy`.
+[build]
+command = "python3 copiar_codigo.py"
+watch_dir = "../src"
+
+[[durable_objects.bindings]]
+name = "ALFRED"
+class_name = "Alfred"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Alfred"]
+
+# Uma rodada de agendamento por minuto (lembretes, briefing, check-in, resumo).
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+PROVEDOR = "claude"
+MODELO_CLAUDE = "claude-haiku-5-5"
+CLAUDE_MAX_TOKENS = "256"
+CLAUDE_LIMITE_TOKENS_DIA = "200000"
+CLAUDE_LIMITE_TOKENS_MES = "3000000"
+FUSO_HORARIO = "America/Araguaina"
+BRIEFING_HORA = "08:00"
+BRIEFING_ATIVO = "true"
+CHECKIN_HORA = "21:00"
+CHECKIN_ATIVO = "true"
+RESUMO_DIA = "domingo"
+RESUMO_HORA = "20:00"
+# O clima usa urllib, ainda não validado no runtime dos Workers.
+CLIMA_ATIVO = "false"
+CIDADE = "Araguaína"
